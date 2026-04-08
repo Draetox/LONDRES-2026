@@ -458,7 +458,7 @@ async function searchPlaygrounds() {
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-api-key": "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", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 800,
@@ -770,7 +770,7 @@ Inclus 1 ou 2 options de transport réalistes. Si à moins de 15 min à pied, in
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-api-key": "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", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 1000,
