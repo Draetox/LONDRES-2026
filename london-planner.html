@@ -29,6 +29,13 @@
   .item { background: #fff; border-radius: 16px; margin-bottom: 10px; overflow: hidden; border: 2px solid transparent; box-shadow: 0 2px 8px rgba(0,0,0,0.07); transition: border-color .2s, opacity .2s; cursor: pointer; }
   .item.done { border-color: var(--day-color); opacity: .75; }
   .item.custom { border-color: #FFD60A; }
+  .item.dragging { opacity: 0.4; transform: scale(0.98); }
+  .item.drag-over { border-color: var(--day-color) !important; border-style: dashed !important; }
+  .drag-handle { flex-shrink: 0; width: 28px; display: flex; align-items: center; justify-content: center; cursor: grab; color: #C7C7CC; font-size: 18px; padding: 0 2px; touch-action: none; }
+  .drag-handle:active { cursor: grabbing; }
+  .edit-mode-btn { background: rgba(255,255,255,0.2); border: none; border-radius: 10px; padding: 5px 10px; font-size: 12px; font-weight: 700; color: #fff; cursor: pointer; margin-left: 8px; }
+  .edit-mode-btn.active { background: #fff; color: var(--day-color); }
+  .item.edit-mode { cursor: default; }
   .item-row { display: flex; align-items: center; padding: 13px 14px; gap: 12px; }
   .check-btn { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #C7C7CC; background: transparent; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .2s; padding: 0; font-size: 14px; color: #fff; }
   .check-btn.checked { background: var(--day-color); border-color: var(--day-color); }
@@ -162,7 +169,10 @@
     </div>
     <div id="progress-counter">
       <div class="pc-label">activités</div>
-      <div><span class="pc-num" id="all-done">0</span><span class="pc-total" id="all-total">/0</span></div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span><span class="pc-num" id="all-done">0</span><span class="pc-total" id="all-total">/0</span></span>
+        <button class="edit-mode-btn" id="edit-btn" onclick="toggleEditMode()">✏️</button>
+      </div>
     </div>
   </div>
   <div id="progress-bar-wrap"><div id="progress-bar" style="width:0%"></div></div>
@@ -338,8 +348,11 @@ const PLAYGROUNDS = [
 // ── STATE ─────────────────────────────────────────────────────────────
 let activeDay = "tue";
 let activeView = "planner";
+let editMode = false;
 let done = JSON.parse(localStorage.getItem("ldn-done") || "{}");
 let customItems = JSON.parse(localStorage.getItem("ldn-custom") || "{}");
+let deletedItems = JSON.parse(localStorage.getItem("ldn-deleted") || "{}");
+let itemOrders = JSON.parse(localStorage.getItem("ldn-orders") || "{}");
 let expanded = null;
 let selectedRoutes = {};
 let tipIdx = 0;
@@ -347,12 +360,37 @@ let addState = "form";
 let pendingItem = null;
 let pgSearchState = "idle";
 let pgResults = [];
+let dragSrcId = null;
 
 function saveDone() { localStorage.setItem("ldn-done", JSON.stringify(done)); }
 function saveCustom() { localStorage.setItem("ldn-custom", JSON.stringify(customItems)); }
+function saveDeleted() { localStorage.setItem("ldn-deleted", JSON.stringify(deletedItems)); }
+function saveOrders() { localStorage.setItem("ldn-orders", JSON.stringify(itemOrders)); }
+
 function getDayItems() {
   const day = DAYS.find(d => d.id === activeDay);
-  return [...day.items, ...(customItems[activeDay] || [])];
+  const deleted = deletedItems[activeDay] || [];
+  const base = day.items.filter(i => !deleted.includes(i.id));
+  const extra = customItems[activeDay] || [];
+  const all = [...base, ...extra];
+  const order = itemOrders[activeDay];
+  if (!order) return all;
+  // Apply saved order
+  const sorted = [];
+  order.forEach(id => { const it = all.find(i => i.id === id); if (it) sorted.push(it); });
+  all.forEach(it => { if (!sorted.find(i => i.id === it.id)) sorted.push(it); });
+  return sorted;
+}
+
+function saveCurrentOrder() {
+  itemOrders[activeDay] = getDayItems().map(i => i.id);
+  saveOrders();
+}
+
+function toggleEditMode() {
+  editMode = !editMode;
+  expanded = null;
+  render();
 }
 
 function mapsUrl(item) {
@@ -530,16 +568,21 @@ function render() {
   comp.style.cssText = "text-align:center;padding:20px 0;display:" + (dayDone === dayItems.length && dayItems.length > 0 ? "block" : "none");
   list.appendChild(comp);
 
+  // Edit mode button state
+  const editBtn = document.getElementById("edit-btn");
+  if (editBtn) { editBtn.textContent = editMode ? "✅ OK" : "✏️"; editBtn.classList.toggle("active", editMode); }
+
   dayItems.forEach(item => {
     const isDone = !!done[item.id];
-    const isExp = expanded === item.id;
+    const isExp = expanded === item.id && !editMode;
     const isCustom = !!(customItems[activeDay] || []).find(i => i.id === item.id);
     const hasRoutes = item.routes && item.routes.length > 0;
     const url = mapsUrl(item);
 
     const div = document.createElement("div");
-    div.className = "item" + (isDone ? " done" : "") + (isCustom ? " custom" : "");
-    div.onclick = () => { expanded = (expanded === item.id ? null : item.id); render(); };
+    div.className = "item" + (isDone ? " done" : "") + (isCustom ? " custom" : "") + (editMode ? " edit-mode" : "");
+    div.dataset.id = item.id;
+    if (!editMode) div.onclick = () => { expanded = (expanded === item.id ? null : item.id); render(); };
 
     let routesHTML = "";
     if (isExp && hasRoutes) {
@@ -567,28 +610,97 @@ function render() {
 
     div.innerHTML = `
       <div class="item-row">
-        <button class="check-btn${isDone ? " checked" : ""}" onclick="toggleDone('${item.id}',event)">${isDone ? "✓" : ""}</button>
+        ${editMode ? `<div class="drag-handle" draggable="false">☰</div>` : `<button class="check-btn${isDone ? " checked" : ""}" onclick="toggleDone('${item.id}',event)">${isDone ? "✓" : ""}</button>`}
         <div class="item-icon">${item.icon}</div>
         <div class="item-text">
-          <div class="item-title${isDone ? " done" : ""}">${item.title}</div>
-          ${item.price ? `<div class="item-price">${item.price}</div>` : ""}
-          ${item.reserve ? `<div class="item-reserve">⚠️ Réserver à l'avance</div>` : ""}
-          ${isCustom ? `<div class="item-custom-tag">✨ Ajouté par vous</div>` : ""}
+          <div class="item-title${isDone && !editMode ? " done" : ""}">${item.title}</div>
+          ${!editMode && item.price ? `<div class="item-price">${item.price}</div>` : ""}
+          ${!editMode && item.reserve ? `<div class="item-reserve">⚠️ Réserver à l'avance</div>` : ""}
+          ${!editMode && isCustom ? `<div class="item-custom-tag">✨ Ajouté par vous</div>` : ""}
+          ${editMode ? `<div style="font-size:11px;color:#8E8E93;margin-top:2px;">Glisser pour réordonner</div>` : ""}
         </div>
         <div class="item-actions">
-          ${hasRoutes ? `<button class="transport-btn" onclick="openModal('${item.id}',event)">🗺️</button>` : ""}
-          ${isCustom ? `<button class="delete-btn" onclick="deleteCustom('${item.id}',event)">🗑</button>` : ""}
-          <span class="chevron${isExp ? " open" : ""}">›</span>
+          ${!editMode && hasRoutes ? `<button class="transport-btn" onclick="openModal('${item.id}',event)">🗺️</button>` : ""}
+          ${editMode ? `<button class="delete-btn" onclick="deleteItem('${item.id}',event)" style="padding:6px 12px;font-size:15px;">🗑</button>` : ""}
+          ${!editMode ? `<span class="chevron${isExp ? " open" : ""}">›</span>` : ""}
         </div>
       </div>${expandedHTML}`;
+
+    // Drag & drop (touch + mouse)
+    if (editMode) {
+      div.setAttribute("draggable", "true");
+      div.addEventListener("dragstart", e => { dragSrcId = item.id; div.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; });
+      div.addEventListener("dragend", () => { div.classList.remove("dragging"); document.querySelectorAll(".item").forEach(el => el.classList.remove("drag-over")); });
+      div.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; div.classList.add("drag-over"); });
+      div.addEventListener("dragleave", () => div.classList.remove("drag-over"));
+      div.addEventListener("drop", e => {
+        e.preventDefault();
+        div.classList.remove("drag-over");
+        if (dragSrcId === item.id) return;
+        // Reorder
+        const items = getDayItems();
+        const srcIdx = items.findIndex(i => i.id === dragSrcId);
+        const dstIdx = items.findIndex(i => i.id === item.id);
+        const newOrder = items.map(i => i.id);
+        newOrder.splice(srcIdx, 1);
+        newOrder.splice(dstIdx, 0, dragSrcId);
+        itemOrders[activeDay] = newOrder;
+        saveOrders();
+        render();
+      });
+
+      // Touch drag support
+      let touchStartY = 0, touchItem = null;
+      div.addEventListener("touchstart", e => { touchStartY = e.touches[0].clientY; touchItem = div; dragSrcId = item.id; div.style.opacity = "0.5"; }, { passive: true });
+      div.addEventListener("touchmove", e => {
+        const y = e.touches[0].clientY;
+        const els = document.elementsFromPoint(e.touches[0].clientX, y);
+        const target = els.find(el => el.classList.contains("item") && el !== div);
+        document.querySelectorAll(".item").forEach(el => el.classList.remove("drag-over"));
+        if (target) target.classList.add("drag-over");
+      }, { passive: true });
+      div.addEventListener("touchend", e => {
+        div.style.opacity = "";
+        const y = e.changedTouches[0].clientY;
+        const els = document.elementsFromPoint(e.changedTouches[0].clientX, y);
+        const target = els.find(el => el.classList.contains("item") && el !== div);
+        document.querySelectorAll(".item").forEach(el => el.classList.remove("drag-over"));
+        if (target && target.dataset.id && target.dataset.id !== dragSrcId) {
+          const items = getDayItems();
+          const srcIdx = items.findIndex(i => i.id === dragSrcId);
+          const dstIdx = items.findIndex(i => i.id === target.dataset.id);
+          const newOrder = items.map(i => i.id);
+          newOrder.splice(srcIdx, 1);
+          newOrder.splice(dstIdx, 0, dragSrcId);
+          itemOrders[activeDay] = newOrder;
+          saveOrders();
+          render();
+        }
+      });
+    }
+
     list.appendChild(div);
   });
 
-  const addBtn = document.createElement("button");
-  addBtn.className = "add-activity-btn";
-  addBtn.innerHTML = `<span style="font-size:20px">＋</span> Ajouter une activité`;
-  addBtn.onclick = openAdd;
-  list.appendChild(addBtn);
+  if (!editMode) {
+    const addBtn = document.createElement("button");
+    addBtn.className = "add-activity-btn";
+    addBtn.innerHTML = `<span style="font-size:20px">＋</span> Ajouter une activité`;
+    addBtn.onclick = openAdd;
+    list.appendChild(addBtn);
+  } else {
+    // Show restore button only if something was deleted or reordered
+    const hasDeleted = (deletedItems[activeDay] || []).length > 0;
+    const hasOrder = !!itemOrders[activeDay];
+    if (hasDeleted || hasOrder) {
+      const restoreBtn = document.createElement("button");
+      restoreBtn.className = "add-activity-btn";
+      restoreBtn.style.cssText = "border-color:#FF9500;color:#FF9500;margin-top:6px;";
+      restoreBtn.innerHTML = `<span style="font-size:18px">↩️</span> Restaurer les activités par défaut`;
+      restoreBtn.onclick = () => restoreDay();
+      list.appendChild(restoreBtn);
+    }
+  }
 
   document.getElementById("bottom-nav").innerHTML = DAYS.map(d =>
     `<button class="nav-btn${d.id === activeDay ? " active" : ""}" onclick="switchDay('${d.id}')">
@@ -602,6 +714,7 @@ function render() {
 function switchDay(id) {
   activeDay = id;
   activeView = "planner";
+  editMode = false;
   expanded = null;
   document.getElementById("tip").style.display = "";
   document.getElementById("list").style.display = "";
@@ -618,12 +731,37 @@ function toggleDone(id, e) {
   render();
 }
 
-function deleteCustom(id, e) {
+function deleteItem(id, e) {
   e.stopPropagation();
   if (!confirm("Supprimer cette activité ?")) return;
-  customItems[activeDay] = (customItems[activeDay] || []).filter(i => i.id !== id);
-  saveCustom();
+  // Check if custom
+  const isCustom = !!(customItems[activeDay] || []).find(i => i.id === id);
+  if (isCustom) {
+    customItems[activeDay] = (customItems[activeDay] || []).filter(i => i.id !== id);
+    saveCustom();
+  } else {
+    // Mark base item as deleted
+    if (!deletedItems[activeDay]) deletedItems[activeDay] = [];
+    deletedItems[activeDay].push(id);
+    saveDeleted();
+  }
+  // Remove from order
+  if (itemOrders[activeDay]) {
+    itemOrders[activeDay] = itemOrders[activeDay].filter(oid => oid !== id);
+    saveOrders();
+  }
   if (expanded === id) expanded = null;
+  render();
+}
+
+function deleteCustom(id, e) { deleteItem(id, e); }
+
+function restoreDay() {
+  if (!confirm("Restaurer toutes les activités d'origine et l'ordre par défaut pour cette journée ?")) return;
+  deletedItems[activeDay] = [];
+  delete itemOrders[activeDay];
+  saveDeleted();
+  saveOrders();
   render();
 }
 
